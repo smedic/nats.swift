@@ -62,7 +62,7 @@ class ConnectionHandler: ChannelInboundHandler {
     }
 
     private var subscriptionCounter = ManagedAtomic<UInt64>(0)
-    private var serverInfo: ServerInfo?
+    private let serverInfo = NIOLockedValueBox<ServerInfo?>(nil)
     private var auth: Auth?
     private let parseRemainder = NIOLockedValueBox<Data?>(nil)
     private var pingTask: RepeatedTask?
@@ -243,11 +243,10 @@ class ConnectionHandler: ChannelInboundHandler {
                 self.handleIncomingMessage(msg)
             case .info(let serverInfo):
                 logger.debug("info \(op)")
-                self.serverInfo = serverInfo
+                self.serverInfo.withLockedValue { $0 = serverInfo }
                 if serverInfo.lameDuckMode {
                     self.fire(.lameDuckMode)
                 }
-                self.serverInfo = serverInfo
                 updateServersList(info: serverInfo)
             default:
                 logger.debug("unknown operation type: \(op)")
@@ -427,7 +426,7 @@ class ConnectionHandler: ChannelInboundHandler {
         }
 
         await infoTask?.value
-        self.serverInfo = info
+        self.serverInfo.withLockedValue { $0 = info }
         if (info.tlsRequired ?? false || self.requireTls) && !self.tlsFirst && s.scheme != "wss" {
             let tlsConfig = try makeTLSConfig()
             let sslContext = try NIOSSLContext(configuration: tlsConfig)
@@ -485,7 +484,7 @@ class ConnectionHandler: ChannelInboundHandler {
                 throw NatsError.ConnectError.invalidConfig(
                     "failed to extract NKEY from credentials file")
             }
-            guard let nonce = self.serverInfo?.nonce else {
+            guard let nonce = self.serverInfo.withLockedValue({ $0?.nonce }) else {
                 throw NatsError.ConnectError.invalidConfig("missing nonce")
             }
             guard let seed = String(data: nkey, encoding: .utf8) else {
@@ -511,7 +510,7 @@ class ConnectionHandler: ChannelInboundHandler {
                 seed: nkeyContent.trimmingCharacters(in: .whitespacesAndNewlines)
             )
 
-            guard let nonce = self.serverInfo?.nonce else {
+            guard let nonce = self.serverInfo.withLockedValue({ $0?.nonce }) else {
                 throw NatsError.ConnectError.invalidConfig("missing nonce")
             }
             let sig = try keypair.sign(input: nonce.data(using: .utf8)!)
@@ -521,7 +520,7 @@ class ConnectionHandler: ChannelInboundHandler {
         }
         if let nkey = self.auth?.nkey {
             let keypair = try KeyPair(seed: nkey)
-            guard let nonce = self.serverInfo?.nonce else {
+            guard let nonce = self.serverInfo.withLockedValue({ $0?.nonce }) else {
                 throw NatsError.ConnectError.invalidConfig("missing nonce")
             }
             let nonceData = nonce.data(using: .utf8)!
