@@ -716,6 +716,7 @@ class ConnectionHandler: ChannelInboundHandler {
         guard let eventLoop = self.channel?.eventLoop else {
             self.state.withLockedValue { $0 = .closed }
             self.pingTask?.cancel()
+            self.failPendingPings()
             self.fire(.closed)
             return
         }
@@ -724,6 +725,7 @@ class ConnectionHandler: ChannelInboundHandler {
         eventLoop.execute {
             self.state.withLockedValue { $0 = .closed }
             self.pingTask?.cancel()
+            self.failPendingPings()
             self.channel?.close(mode: .all, promise: promise)
         }
 
@@ -801,13 +803,19 @@ class ConnectionHandler: ChannelInboundHandler {
         }
         let ping = ClientOp.ping
         do {
-            self.pingQueue.enqueue(rttCommand ?? RttCommand.makeFrom(channel: self.channel))
+            self.pingQueue.enqueue(rttCommand ?? RttCommand.withoutPromise())
             try await self.write(operation: ping)
             logger.debug("sent ping: \(pingsOut)")
         } catch {
             logger.error("Unable to send ping: \(error)")
         }
 
+    }
+
+    private func failPendingPings() {
+        for ping in pingQueue.removeAll() {
+            ping.fail(NatsError.ClientError.connectionClosed)
+        }
     }
 
     func channelActive(context: ChannelHandlerContext) {

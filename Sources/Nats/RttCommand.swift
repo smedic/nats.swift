@@ -12,14 +12,21 @@
 // limitations under the License.
 
 import Foundation
+import NIOConcurrencyHelpers
 import NIOCore
 
 internal class RttCommand {
     let startTime = DispatchTime.now()
     let promise: EventLoopPromise<TimeInterval>?
+    private let completionLock = NIOLock()
+    private var isCompleted = false
 
     static func makeFrom(channel: Channel?) -> RttCommand {
         RttCommand(promise: channel?.eventLoop.makePromise(of: TimeInterval.self))
+    }
+
+    static func withoutPromise() -> RttCommand {
+        RttCommand(promise: nil)
     }
 
     private init(promise: EventLoopPromise<TimeInterval>?) {
@@ -30,10 +37,26 @@ internal class RttCommand {
         let now = DispatchTime.now()
         let nanoTime = now.uptimeNanoseconds - startTime.uptimeNanoseconds
         let rtt = TimeInterval(nanoTime) / 1_000_000_000  // Convert nanos to seconds
-        promise?.succeed(rtt)
+        complete { $0.succeed(rtt) }
+    }
+
+    func fail(_ error: Error) {
+        complete { $0.fail(error) }
     }
 
     func getRoundTripTime() async throws -> TimeInterval {
         try await promise?.futureResult.get() ?? 0
+    }
+
+    private func complete(_ completion: (EventLoopPromise<TimeInterval>) -> Void) {
+        guard let promise else { return }
+
+        let shouldComplete = completionLock.withLock {
+            guard !isCompleted else { return false }
+            isCompleted = true
+            return true
+        }
+        guard shouldComplete else { return }
+        completion(promise)
     }
 }

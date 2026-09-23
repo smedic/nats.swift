@@ -29,4 +29,12 @@ internal class ConcurrentQueue<T> {
         guard !elements.isEmpty else { return nil }
         return elements.removeFirst()
     }
+
+    func removeAll() -> [T] {
+        lock.lock()
+        defer { lock.unlock() }
+        let removed = elements
+        elements.removeAll(keepingCapacity: true)
+        return removed
+    }
 }
